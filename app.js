@@ -203,12 +203,13 @@ function formView(box, it, folders, isNew, newFolderName = '') {
   <label>連結</label><input id="f-url" value="${esc(it.url)}">
   ${isNew ? '' : `<div class="sub" style="margin-top:6px">${it.url ? `<a class="link" href="${esc(it.url)}" target="_blank" rel="noopener">開啟連結 ↗</a>` : ''}</div>`}
   ${it.rawText ? `<label>原始文字</label><div class="sub" style="white-space:pre-wrap">${esc(it.rawText)}</div>` : ''}
-  <div class="row"><button id="save">${isNew ? '儲存' : '儲存修改'}</button>${isNew ? '' : '<button id="del" class="danger">刪除</button>'}</div></div>`;
+  <div class="row"><button id="save" ${isNew ? '' : 'disabled'}>${isNew ? '儲存' : '儲存修改'}</button>${isNew ? '' : '<button id="del" class="danger">刪除</button>'}</div></div>`;
   const sync = () => {
     const t = $('#f-type', box).value;
     $('#f-place', box).style.display = t === '地點' ? 'block' : 'none';
     $('#f-soft', box).style.display = t === '軟體' ? 'block' : 'none';
   };
+  if (!isNew) ['input', 'change'].forEach(ev => box.addEventListener(ev, e => { if (e.target.closest('.card') && e.target.id !== 'save') $('#save', box).disabled = false; }));
   $('#f-type', box).onchange = sync;
   $('#f-folder', box).onchange = e => { $('#f-newf', box).style.display = e.target.value === '__new__' ? 'block' : 'none'; };
   $('#save', box).onclick = async () => {
@@ -286,12 +287,16 @@ async function settings(v) {
   v.innerHTML = `<div class="card"><b>OpenAI API key</b><div class="sub">只存在這支手機的瀏覽器，不會上傳到其他地方。</div>
   <label>API key</label><input id="key" type="password" autocomplete="off" placeholder="sk-…" value="${esc(cfg.key)}">
   <label>模型</label><input id="model" value="${esc(cfg.model)}">
-  <div class="row"><button id="ss">儲存</button></div></div>
+  <div class="row"><button id="ss" disabled>儲存</button></div></div>
   <div class="card"><b>備份</b><div class="row"><button id="exp" class="sec">匯出 JSON</button><button id="imp" class="sec">匯入 JSON</button></div>
   <input id="file" type="file" accept="application/json,.json" hidden></div>`;
+  const dirty = () => $('#key').value.trim() !== cfg.key || ($('#model').value.trim() || 'gpt-4o-mini') !== cfg.model;
+  const refresh = () => { $('#ss').disabled = !dirty(); };
+  $('#key').oninput = $('#model').oninput = refresh;
   $('#ss').onclick = () => {
     localStorage.setItem('apiKey', $('#key').value.trim());
-    localStorage.setItem('model', $('#model').value.trim() || 'gpt-4o-mini'); toast('已儲存');
+    localStorage.setItem('model', $('#model').value.trim() || 'gpt-4o-mini');
+    $('#model').value = cfg.model; refresh(); toast('已儲存');
   };
   $('#exp').onclick = async () => {
     const data = { version: 1, exportedAt: Date.now(), folders: await getAll('folders'), items: await getAll('items') };

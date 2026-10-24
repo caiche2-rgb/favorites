@@ -21,7 +21,7 @@ textarea{min-height:80px}
 button{font:inherit;padding:10px 16px;border:0;border-radius:8px;background:var(--pri);color:#fff}
 button.sec{background:var(--bg);color:var(--fg);border:1px solid var(--bd)}
 button.danger{background:var(--danger)}
-button:disabled{opacity:.5}
+button:disabled{background:var(--bd);color:var(--sub);border:0;opacity:1}
 .row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .row>*{flex:1}
 .chips{display:flex;gap:6px;overflow-x:auto;margin:8px 0}
