@@ -51,21 +51,38 @@ function ruleClassify(url) {
   return '';
 }
 
+// 抓得到的公開資訊：目前支援 YouTube（oEmbed，免 key）
+async function fetchMeta(url) {
+  try {
+    if (/youtube\.com|youtu\.be/i.test(new URL(url).hostname)) {
+      const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url));
+      if (r.ok) { const j = await r.json(); return `YouTube 影片標題「${j.title}」，頻道「${j.author_name}」`; }
+    }
+  } catch { }
+  return '';
+}
+
+const PLACEHOLDERS = ['簡短標題', '一句話摘要', '標籤', '建議收藏夾名稱', '店名', '地址', '城市', '平台', '用途'];
+const clean = s => { s = String(s ?? '').trim(); return PLACEHOLDERS.includes(s) ? '' : s; };
+
 async function aiClassify(url, text, folders) {
-  const sys = `你是收藏整理助手。根據使用者給的連結與貼文文字，只回傳 JSON，欄位如下：
-{"type":"地點|影片文章|軟體|其他","title":"簡短標題","summary":"一句話摘要","tags":["標籤"],"folder":"建議收藏夾名稱",
-"place":{"name":"店名","city":"城市","address":"地址","lat":數字或null,"lng":數字或null},
-"software":{"platform":"平台","purpose":"用途"}}
-規則：全部用繁體中文；type 為地點才填 place，為軟體才填 software，否則該欄位用 null；
-經緯度不確定就填 null，不要亂猜；folder 優先從現有收藏夾挑選：${folders.map(f => f.name).join('、') || '(目前沒有)'}，沒有合適的才建議新名稱。
-注意：IG、TikTok 連結無法讀取內容，主要依據使用者附的文字判斷。`;
+  const sys = `你是收藏整理助手。根據使用者給的連結與文字內容，整理出一筆收藏，只回傳 JSON 物件。
+欄位：type（只能是 地點、影片文章、軟體、其他 之一）、title（用內容寫出的標題，約 20 字內）、summary（用內容寫出的一句話摘要）、
+tags（2 到 5 個關鍵字陣列）、folder（建議收藏夾名稱）、place、software。
+place 只在 type 是地點時填，是物件，含 name、city、address、lat、lng；software 只在 type 是軟體時填，是物件，含 platform、purpose；不適用就填 null。
+規則：
+- 全部用繁體中文，title 和 summary 必須是根據實際內容寫的句子，不能是空泛的占位文字。
+- 資訊不足以判斷的欄位，填空字串或 null，不要編造；經緯度不確定一律填 null。
+- folder 優先從現有收藏夾挑選：${folders.map(f => f.name).join('、') || '（目前沒有）'}；沒有合適的才建議一個新的具體名稱，也可以填空字串。
+- IG、TikTok 連結無法讀取，主要依據使用者附的文字判斷。`;
+  const ctx = await fetchMeta(url);
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.key },
     body: JSON.stringify({
       model: cfg.model,
       response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: sys }, { role: 'user', content: `連結：${url || '(無)'}\n文字：${text || '(無)'}` }],
+      messages: [{ role: 'system', content: sys }, { role: 'user', content: `連結：${url || '(無)'}\n${ctx ? '網頁資訊：' + ctx + '\n' : ''}使用者附的文字：${text || '(無)'}` }],
     }),
   });
   if (!r.ok) throw new Error('API ' + r.status + ' ' + (await r.text()).slice(0, 120));
@@ -128,6 +145,8 @@ async function add(v) {
   $('#go').onclick = async () => {
     const url = $('#url').value.trim(), text = $('#txt').value.trim();
     if (!url && !text) return toast('請輸入連結或文字');
+    if (/instagram\.com|tiktok\.com|threads\.net|facebook\.com|fb\.watch/i.test(url) && text.length < 10)
+      return toast('IG／TikTok 這類連結讀不到內容，請先把貼文文字貼到下面的欄位，再按分析', 6000);
     const it = blankItem(url, text);
     const btn = $('#go'); btn.disabled = true; btn.textContent = '分析中…';
     let aiFolder = '';
@@ -135,14 +154,15 @@ async function add(v) {
       if (!cfg.key) throw new Error('沒有 API key');
       const a = await aiClassify(url, text, folders);
       it.type = TYPES.includes(a.type) ? a.type : '其他';
-      it.title = a.title || ''; it.summary = a.summary || '';
-      it.tags = Array.isArray(a.tags) ? a.tags.map(String) : [];
+      it.title = clean(a.title); it.summary = clean(a.summary);
+      it.tags = Array.isArray(a.tags) ? a.tags.map(clean).filter(Boolean) : [];
       if (a.place && it.type === '地點') {
         const pl = a.place, n = x => (x == null || x === '' || isNaN(+x)) ? null : +x;
-        it.place = { name: pl.name || '', address: [pl.city, pl.address].filter(Boolean).join(' ').replace(pl.city && pl.address?.startsWith(pl.city) ? pl.city + ' ' : '', ''), lat: n(pl.lat), lng: n(pl.lng) };
+        const addr = clean(pl.address), city = clean(pl.city);
+        it.place = { name: clean(pl.name), address: city && !addr.includes(city) ? city + addr : addr, lat: n(pl.lat), lng: n(pl.lng) };
       }
-      if (a.software && it.type === '軟體') it.software = { platform: a.software.platform || '', purpose: a.software.purpose || '' };
-      aiFolder = a.folder || '';
+      if (a.software && it.type === '軟體') it.software = { platform: clean(a.software.platform), purpose: clean(a.software.purpose) };
+      aiFolder = clean(a.folder);
     } catch (e) {
       it.type = ruleClassify(url) || '其他';
       it.title = url;
