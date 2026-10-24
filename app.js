@@ -90,6 +90,49 @@ place 只在 type 是地點時填，是物件，含 name、city、address、lat�
   return JSON.parse(j.choices[0].message.content);
 }
 
+/* ---------- 縮圖 / 平台圖示 ---------- */
+function ytId(url) {
+  try {
+    const u = new URL(url), h = u.hostname.replace(/^www\.|^m\./, '');
+    if (h === 'youtu.be') return u.pathname.slice(1, 12);
+    if (h.endsWith('youtube.com')) return u.searchParams.get('v') || (u.pathname.match(/^\/(shorts|embed|live)\/([\w-]{11})/) || [])[2] || '';
+  } catch { }
+  return '';
+}
+function platform(it) {
+  const u = (it.url || '').toLowerCase();
+  if (/youtube\.com|youtu\.be/.test(u)) return ['▶', '#e62117'];
+  if (/instagram\.com/.test(u)) return ['📷', 'linear-gradient(45deg,#f9ce34,#ee2a7b,#6228d7)'];
+  if (/threads\.(net|com)/.test(u)) return ['@', '#111'];
+  if (/tiktok\.com/.test(u)) return ['♪', '#010101'];
+  if (/facebook\.com|fb\.watch/.test(u)) return ['f', '#1877f2'];
+  if (/x\.com|twitter\.com/.test(u)) return ['𝕏', '#111'];
+  if (/github\.com/.test(u)) return ['⌥', '#24292e'];
+  if (/apps\.apple\.com|play\.google\.com/.test(u)) return ['📱', '#34a853'];
+  if (/maps\.|goo\.gl\/maps/.test(u) || it.type === '地點') return ['📍', '#ea4335'];
+  return [{ 影片文章: '🎬', 軟體: '💻' }[it.type] || '🔖', '#6b7280'];
+}
+function thumbHtml(it) {
+  const src = it.thumb || (ytId(it.url) ? `https://i.ytimg.com/vi/${ytId(it.url)}/mqdefault.jpg` : '');
+  const [ic, bg] = platform(it);
+  return src ? `<img class="th" loading="lazy" src="${esc(src)}" alt="">`
+    : `<div class="th ph" style="background:${bg}">${ic}</div>`;
+}
+// 把選的圖縮成寬 360px 的 JPEG（存在手機本機）
+function shrinkImage(file) {
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const w = Math.min(360, img.width), h = Math.round(img.height * w / img.width);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.75));
+    };
+    img.onerror = () => rej(new Error('無法讀取圖片'));
+    img.src = url;
+  });
+}
+
 function blankItem(url = '', text = '') {
   return { id: uid(), url, rawText: text, type: '其他', title: '', summary: '', tags: [], folderId: '', place: { name: '', address: '', lat: null, lng: null }, software: { platform: '', purpose: '' }, note: '', createdAt: Date.now() };
 }
@@ -120,10 +163,10 @@ async function home(v) {
     const list = items.filter(i => (!filter.type || i.type === filter.type) &&
       (!q || [i.title, i.summary, i.note, i.url, i.rawText, ...(i.tags || [])].join('\n').toLowerCase().includes(q)))
       .sort((a, b) => b.createdAt - a.createdAt);
-    $('#list').innerHTML = list.length ? list.map(i => `<a class="card" href="#/item/${i.id}">
-      <h3><span class="badge">${esc(i.type)}</span>${esc(i.title || i.url || '(無標題)')}</h3>
+    $('#list').innerHTML = list.length ? list.map(i => `<a class="card item" href="#/item/${i.id}">${thumbHtml(i)}
+      <div class="body"><h3><span class="badge">${esc(i.type)}</span>${esc(i.title || i.url || '(無標題)')}</h3>
       <div class="sub">${esc(i.summary)}</div>
-      <div>${fname(i.folderId) ? `<span class="tag">📁 ${esc(fname(i.folderId))}</span>` : ''}${(i.tags || []).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div></a>`).join('')
+      <div>${fname(i.folderId) ? `<span class="tag">📁 ${esc(fname(i.folderId))}</span>` : ''}${(i.tags || []).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div></div></a>`).join('')
       : `<div class="empty">${items.length ? '沒有符合的收藏' : '還沒有收藏，按下方「新增」開始'}</div>`;
   };
   draw();
@@ -184,6 +227,10 @@ async function add(v) {
 function formView(box, it, folders, isNew, newFolderName = '') {
   const showP = it.type === '地點', showS = it.type === '軟體';
   box.innerHTML = `<div class="card" style="margin-top:14px">
+  <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px"><div id="f-th" style="flex:none">${thumbHtml(it)}</div>
+    <div style="flex:1"><button type="button" class="sec" id="f-pick" style="width:100%">選擇縮圖圖片</button>
+    <button type="button" class="sec" id="f-unpick" style="width:100%;margin-top:6px;display:${it.thumb ? 'block' : 'none'}">移除自選縮圖</button>
+    <input id="f-file" type="file" accept="image/*" hidden></div></div>
   <label>類型</label><select id="f-type">${TYPES.map(t => `<option ${t === it.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
   <label>標題</label><input id="f-title" value="${esc(it.title)}">
   <label>摘要</label><textarea id="f-sum">${esc(it.summary)}</textarea>
@@ -213,6 +260,14 @@ function formView(box, it, folders, isNew, newFolderName = '') {
     $('#f-soft', box).style.display = t === '軟體' ? 'block' : 'none';
   };
   if (!isNew) ['input', 'change'].forEach(ev => box.addEventListener(ev, e => { if (e.target.closest('.card') && e.target.id !== 'save') $('#save', box).disabled = false; }));
+  const markDirty = () => $('#f-title', box).dispatchEvent(new Event('input', { bubbles: true }));
+  const redrawTh = () => { $('#f-th', box).innerHTML = thumbHtml(it); $('#f-unpick', box).style.display = it.thumb ? 'block' : 'none'; };
+  $('#f-pick', box).onclick = () => $('#f-file', box).click();
+  $('#f-file', box).onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { it.thumb = await shrinkImage(f); redrawTh(); markDirty(); } catch (err) { toast(err.message); }
+  };
+  $('#f-unpick', box).onclick = () => { delete it.thumb; redrawTh(); markDirty(); };
   $('#f-type', box).onchange = sync;
   $('#f-folder', box).onchange = e => { $('#f-newf', box).style.display = e.target.value === '__new__' ? 'block' : 'none'; };
   $('#save', box).onclick = async () => {
@@ -321,7 +376,12 @@ async function settings(v) {
 }
 
 /* ---------- 啟動 ---------- */
-openDB().then(() => {
+openDB().then(async () => {
+  // 清掉舊版 bug 存下來的占位文字
+  for (const i of await getAll('items')) {
+    const t = clean(i.title), s = clean(i.summary);
+    if (t !== i.title || s !== i.summary) await put('items', { ...i, title: t, summary: s });
+  }
   addEventListener('hashchange', route);
   // 分享進來：?url=…&text=… 直接去新增頁
   // 分享進來：先記下參數、清掉網址上的參數，只渲染一次新增頁

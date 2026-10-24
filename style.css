@@ -33,4 +33,10 @@ button:disabled{background:var(--bd);color:var(--sub);border:0;opacity:1}
 .fr button{flex:none;padding:6px 10px;font-size:14px}
 #toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);max-width:90vw;text-align:center;word-break:break-all;background:#222;color:#fff;padding:8px 16px;border-radius:12px;opacity:0;transition:.3s;pointer-events:none;z-index:9}
 #toast.show{opacity:.95}
+.item{display:flex;gap:10px}
+.item .body{flex:1;min-width:0}
+.item h3{word-break:break-all}
+.th{width:96px;height:72px;border-radius:8px;object-fit:cover;flex:none;background:var(--bg)}
+.th.ph{display:flex;align-items:center;justify-content:center;color:#fff;font-size:28px;font-weight:700}
+#f-th .th{width:120px;height:90px}
 a.link{color:var(--pri);word-break:break-all}
