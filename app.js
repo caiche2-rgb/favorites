@@ -90,6 +90,68 @@ place 只在 type 是地點時填，是物件，含 name、city、address、lat�
   return JSON.parse(j.choices[0].message.content);
 }
 
+/* ---------- 地點 / 地圖 ---------- */
+const hasPos = it => it.place && it.place.lat != null && it.place.lng != null;
+// 優先用「店名 + 地址」搜尋（Google 地圖會顯示真正的店家頁），沒有才用座標
+function gmapsUrl(pl) {
+  const q = [pl.name, pl.address].filter(Boolean).join(' ') || (pl.lat != null && pl.lng != null ? pl.lat + ',' + pl.lng : '');
+  return q ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q) : '';
+}
+// Google 地圖連結內含座標時直接讀出（短網址 maps.app.goo.gl 讀不到）
+function coordsFromUrl(url) {
+  const m = String(url).match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) || String(url).match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || String(url).match(/[?&](?:q|query|ll)=(-?\d+\.\d+)(?:,|%2C)(-?\d+\.\d+)/);
+  return m ? { lat: +m[1], lng: +m[2] } : null;
+}
+// 用 OpenStreetMap 的 Nominatim 把店名／地址轉成座標（免 key，請勿大量呼叫）
+async function geocode(pl) {
+  const tries = [[pl.name, pl.address], [pl.address], [pl.name]].map(a => a.filter(Boolean).join(' ')).filter((q, i, a) => q && a.indexOf(q) === i);
+  for (const q of tries) {
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=zh-TW&q=' + encodeURIComponent(q));
+    if (!r.ok) continue;
+    const j = await r.json();
+    if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon };
+  }
+  return null;
+}
+let leafletP;
+function loadLeaflet() {
+  if (window.L) return Promise.resolve();
+  return leafletP || (leafletP = new Promise((res, rej) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.append(css);
+    const s = document.createElement('script'); s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.onload = res; s.onerror = () => { leafletP = null; rej(new Error('地圖載入失敗，請確認網路')); };
+    document.head.append(s);
+  }));
+}
+let mapFolder = '';
+async function mapPage(v) {
+  $('#title').textContent = '地圖';
+  const [items, fs] = await Promise.all([getAll('items'), getAll('folders')]);
+  const placed = items.filter(hasPos);
+  const unplaced = items.filter(i => i.type === '地點' && !hasPos(i));
+  const usable = fs.filter(f => placed.some(i => i.folderId === f.id));
+  if (mapFolder && !usable.some(f => f.id === mapFolder)) mapFolder = '';
+  v.innerHTML = `<div class="chips"><button data-f="" class="${mapFolder ? '' : 'on'}">全部 (${placed.length})</button>
+    ${usable.map(f => `<button data-f="${f.id}" class="${mapFolder === f.id ? 'on' : ''}">${esc(f.name)}</button>`).join('')}</div>
+  <div id="map"></div>
+  ${placed.length ? '' : '<div class="empty">還沒有有座標的地點。<br>到收藏的詳情頁，按「用店名／地址查座標」。</div>'}
+  ${unplaced.length ? `<h3>尚未定位 (${unplaced.length})</h3>${unplaced.map(i => `<a class="card" href="#/item/${i.id}"><b>${esc(i.place?.name || i.title || i.url)}</b><div class="sub">${esc(i.place?.address || '點進去補上地址並查座標')}</div></a>`).join('')}` : ''}`;
+  v.querySelectorAll('.chips button').forEach(b => b.onclick = () => { mapFolder = b.dataset.f; mapPage(v); });
+  try { await loadLeaflet(); } catch (e) { $('#map').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const map = L.map('map', { zoomControl: true }).setView([23.7, 121], 7);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+  const pts = [];
+  placed.filter(i => !mapFolder || i.folderId === mapFolder).forEach(i => {
+    const pos = [i.place.lat, i.place.lng]; pts.push(pos);
+    const g = gmapsUrl(i.place);
+    L.marker(pos, { icon: L.divIcon({ className: 'pin', html: '📍', iconSize: [28, 28], iconAnchor: [14, 28], popupAnchor: [0, -26] }) })
+      .addTo(map).bindPopup(`<b>${esc(i.place.name || i.title)}</b><br>${esc(i.place.address)}<br><span style="color:#666">${esc(i.summary)}</span>
+        <div style="margin-top:6px"><a href="#/item/${i.id}">詳情</a>　<a href="${g}" target="_blank" rel="noopener">在 Google 地圖開啟 ↗</a></div>`);
+  });
+  if (pts.length) map.fitBounds(pts, { padding: [40, 40], maxZoom: 15 });
+}
+
 /* ---------- 縮圖 / 平台圖示 ---------- */
 function ytId(url) {
   try {
@@ -138,7 +200,7 @@ function blankItem(url = '', text = '') {
 }
 
 /* ---------- 路由 ---------- */
-const routes = { '': home, add, folders, settings, item: detail };
+const routes = { '': home, add, folders, settings, map: mapPage, item: detail };
 async function route() {
   const [, name = '', arg] = location.hash.replace('#', '').split('/');
   const tab = name === 'item' ? 'home' : (name || 'home');
@@ -244,6 +306,8 @@ function formView(box, it, folders, isNew, newFolderName = '') {
     <label>地址</label><input id="p-addr" value="${esc(it.place?.address)}">
     <label>緯度（可手動修正）</label><input id="p-lat" inputmode="decimal" value="${it.place?.lat ?? ''}">
     <label>經度</label><input id="p-lng" inputmode="decimal" value="${it.place?.lng ?? ''}">
+    <div class="row"><button type="button" class="sec" id="p-geo">用店名／地址查座標</button><button type="button" class="sec" id="p-gmap">在 Google 地圖開啟 ↗</button></div>
+    <div class="sub" id="p-msg"></div>
   </div>
   <div id="f-soft" style="display:${showS ? 'block' : 'none'}">
     <label>平台</label><input id="s-plat" value="${esc(it.software?.platform)}">
@@ -268,6 +332,22 @@ function formView(box, it, folders, isNew, newFolderName = '') {
     try { it.thumb = await shrinkImage(f); redrawTh(); markDirty(); } catch (err) { toast(err.message); }
   };
   $('#f-unpick', box).onclick = () => { delete it.thumb; redrawTh(); markDirty(); };
+  const curPlace = () => ({ name: $('#p-name', box).value.trim(), address: $('#p-addr', box).value.trim(), lat: $('#p-lat', box).value.trim() === '' ? null : +$('#p-lat', box).value, lng: $('#p-lng', box).value.trim() === '' ? null : +$('#p-lng', box).value });
+  $('#p-gmap', box).onclick = () => {
+    const u = gmapsUrl(curPlace());
+    if (u) window.open(u, '_blank'); else toast('請先填店名或地址');
+  };
+  $('#p-geo', box).onclick = async () => {
+    const msg = $('#p-msg', box), pl = curPlace();
+    if (!pl.name && !pl.address) return toast('請先填店名或地址');
+    msg.textContent = '查詢中…';
+    try {
+      const c = coordsFromUrl($('#f-url', box).value) || await geocode(pl);
+      if (!c) { msg.textContent = '查不到，請補上更完整的地址，或自己填經緯度'; return; }
+      $('#p-lat', box).value = c.lat.toFixed(6); $('#p-lng', box).value = c.lng.toFixed(6);
+      msg.textContent = '已填入座標，請確認位置後儲存（可到 Google 地圖開啟核對）'; markDirty();
+    } catch { msg.textContent = '查詢失敗，請稍後再試'; }
+  };
   $('#f-type', box).onchange = sync;
   $('#f-folder', box).onchange = e => { $('#f-newf', box).style.display = e.target.value === '__new__' ? 'block' : 'none'; };
   $('#save', box).onclick = async () => {
