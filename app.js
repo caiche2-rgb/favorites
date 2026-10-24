@@ -358,9 +358,18 @@ async function add(v) {
   const sharedText = [p.get('title'), p.get('text')].filter(Boolean).join('\n');
   const sharedUrl = p.get('url') || firstUrl(sharedText);
   v.innerHTML = `<label>連結</label><input id="url" type="url" placeholder="https://…" value="${esc(sharedUrl)}">
-  <label>貼文文字（選填，IG / TikTok 建議貼上）</label><textarea id="txt">${esc(sharedText.replace(sharedUrl, '').trim())}</textarea>
+  <label>貼文文字（選填，IG / TikTok 建議貼上）</label><button type="button" class="sec" id="paste" style="width:100%;margin-bottom:6px">📋 從剪貼簿貼上</button><textarea id="txt">${esc(sharedText.replace(sharedUrl, '').trim())}</textarea>
   <div class="row"><button id="go">分析並分類</button><button id="manual" class="sec">手動填寫</button></div><div id="out"></div>`;
   const folders = await getAll('folders');
+  $('#paste').onclick = async () => {
+    try {
+      const t = (await navigator.clipboard.readText()).trim();
+      if (!t) return toast('剪貼簿是空的，請先複製貼文文字');
+      const u = firstUrl(t);
+      if (u && !$('#url').value) $('#url').value = u;
+      $('#txt').value = (u ? t.replace(u, '') : t).trim();
+    } catch { toast('無法讀取剪貼簿，請長按文字欄手動貼上'); }
+  };
   const start = it => { $('#out').innerHTML = ''; formView($('#out'), it, folders, true); };
   $('#manual').onclick = () => start(blankItem($('#url').value.trim(), $('#txt').value.trim()));
   $('#go').onclick = async () => {
