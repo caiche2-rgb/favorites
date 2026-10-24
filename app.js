@@ -34,9 +34,9 @@ const cfg = {
 };
 
 /* ---------- UI 工具 ---------- */
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200);
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), ms);
 }
 const firstUrl = s => (String(s || '').match(/https?:\/\/[^\s]+/) || [''])[0];
 
@@ -146,7 +146,7 @@ async function add(v) {
     } catch (e) {
       it.type = ruleClassify(url) || '其他';
       it.title = url;
-      toast('AI 未使用（' + (cfg.key ? '呼叫失敗' : '無 key') + '），改用網址規則' + (it.type === '其他' ? '，請手動選類型' : ''));
+      toast('AI 未使用（' + (cfg.key ? '呼叫失敗：' + e.message : '無 key') + '），改用網址規則' + (it.type === '其他' ? '，請手動選類型' : ''), 9000);
       console.warn(e);
     }
     const hit = folders.find(f => f.name === aiFolder);

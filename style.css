@@ -31,6 +31,6 @@ button:disabled{opacity:.5}
 .fr{display:flex;align-items:center;gap:8px}
 .fr b{flex:1}
 .fr button{flex:none;padding:6px 10px;font-size:14px}
-#toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 16px;border-radius:99px;opacity:0;transition:.3s;pointer-events:none;z-index:9}
+#toast{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);max-width:90vw;text-align:center;word-break:break-all;background:#222;color:#fff;padding:8px 16px;border-radius:99px;opacity:0;transition:.3s;pointer-events:none;z-index:9}
 #toast.show{opacity:.95}
 a.link{color:var(--pri);word-break:break-all}
