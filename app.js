@@ -31,6 +31,7 @@ const del = (s, id) => tx(s, 'readwrite', o => o.delete(id));
 const cfg = {
   get key() { return localStorage.getItem('apiKey') || ''; },
   get model() { return localStorage.getItem('model') || 'gpt-4o-mini'; },
+  get gkey() { return localStorage.getItem('gmapsKey') || ''; },
 };
 
 /* ---------- UI 工具 ---------- */
@@ -105,6 +106,17 @@ function coordsFromUrl(url) {
 // 用 OpenStreetMap 的 Nominatim 把店名／地址轉成座標（免 key，請勿大量呼叫）
 async function geocode(pl) {
   const tries = [[pl.name, pl.address], [pl.address], [pl.name]].map(a => a.filter(Boolean).join(' ')).filter((q, i, a) => q && a.indexOf(q) === i);
+  if (cfg.gkey) {   // 有 Google 金鑰就用 Google 查（比 OpenStreetMap 準，台灣小店也找得到）
+    await loadGoogleMaps();
+    const gc = new google.maps.Geocoder();
+    for (const q of tries) {
+      try {
+        const { results } = await gc.geocode({ address: q, region: 'tw', language: 'zh-TW' });
+        if (results[0]) { const l = results[0].geometry.location; return { lat: l.lat(), lng: l.lng() }; }
+      } catch (e) { if (!/ZERO_RESULTS/.test(String(e))) throw e; }
+    }
+    return null;
+  }
   for (const q of tries) {
     const r = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&accept-language=zh-TW&q=' + encodeURIComponent(q));
     if (!r.ok) continue;
@@ -112,6 +124,101 @@ async function geocode(pl) {
     if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon };
   }
   return null;
+}
+function parseCSV(text) {
+  const rows = []; let row = [], f = '', q = false;
+  text = text.replace(/^﻿/, '');
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); f = ''; if (row.some(x => x !== '')) rows.push(row); row = []; }
+    else f += c;
+  }
+  row.push(f); if (row.some(x => x !== '')) rows.push(row);
+  return rows;
+}
+// Takeout 的 .json（GeoJSON，有座標）與 .csv（只有名稱與連結）
+async function importGoogleFiles(files) {
+  const [fs, items] = await Promise.all([getAll('folders'), getAll('items')]);
+  const seen = new Set(items.map(i => i.url).filter(Boolean));
+  let added = 0, skipped = 0, nopos = 0;
+  for (const file of files) {
+    const base = file.name.replace(/\.(csv|json)$/i, '');
+    const text = await file.text();
+    let recs = [];
+    if (/\.json$/i.test(file.name)) {
+      const j = JSON.parse(text);
+      recs = (j.features || []).map(ft => {
+        const p = ft.properties || {}, loc = p.Location || p.location || {}, g = p['Geo Coordinates'] || loc['Geo Coordinates'] || {};
+        const c = ft.geometry?.coordinates;
+        const lat = g.Latitude ?? g.latitude ?? (c && c[1] !== 0 ? c[1] : null), lng = g.Longitude ?? g.longitude ?? (c && c[0] !== 0 ? c[0] : null);
+        return { title: p.Title || p.title || loc['Business Name'] || '', note: p.Comment || '', url: p['Google Maps URL'] || p.google_maps_url || '', address: loc.Address || '', lat: lat == null ? null : +lat, lng: lng == null ? null : +lng };
+      });
+    } else {
+      const rows = parseCSV(text), h = rows.shift() || [];
+      const idx = (re, d) => { const k = h.findIndex(x => re.test(x.trim())); return k >= 0 ? k : d; };
+      const ti = idx(/^(title|標題|名稱)$/i, 0), ni = idx(/^(note|附註|備註)$/i, 1), ui = idx(/^(url|網址)$/i, 2), ci = idx(/^(comment|留言|評論)$/i, 4);
+      recs = rows.map(r => ({ title: r[ti] || '', note: [r[ni], r[ci]].filter(Boolean).join('\n'), url: r[ui] || '', address: '', lat: null, lng: null }));
+    }
+    recs = recs.filter(r => r.title || r.url);
+    if (!recs.length) continue;
+    let folder = fs.find(f => f.name === base);
+    if (!folder) { folder = { id: uid(), name: base, createdAt: Date.now() }; await put('folders', folder); fs.push(folder); }
+    for (const r of recs) {
+      if (r.url && seen.has(r.url)) { skipped++; continue; }
+      const fromUrl = r.lat == null ? coordsFromUrl(r.url) : null;
+      const lat = r.lat ?? fromUrl?.lat ?? null, lng = r.lng ?? fromUrl?.lng ?? null;
+      if (lat == null) nopos++;
+      const it = blankItem(r.url);
+      Object.assign(it, { type: '地點', title: r.title, note: r.note, folderId: folder.id, place: { name: r.title, address: r.address, lat, lng } });
+      await put('items', it); if (r.url) seen.add(r.url); added++;
+    }
+  }
+  return { added, skipped, nopos };
+}
+async function batchGeocode(list, onProgress) {
+  let ok = 0;
+  for (let n = 0; n < list.length; n++) {
+    const it = list[n]; onProgress(n + 1, list.length);
+    try {
+      const c = await geocode(it.place || {});
+      if (c) { it.place.lat = c.lat; it.place.lng = c.lng; await put('items', it); ok++; }
+    } catch { }
+    await new Promise(r => setTimeout(r, 1100)); // Nominatim 規定每秒最多 1 次
+  }
+  return ok;
+}
+let gmapsP;
+function loadGoogleMaps() {
+  if (window.google?.maps?.Geocoder && window.google.maps.Map) return Promise.resolve();
+  return gmapsP || (gmapsP = new Promise((res, rej) => {
+    window.gm_authFailure = () => { gmapsP = null; rej(new Error('Google 地圖金鑰無效或未啟用，請檢查設定頁的金鑰與 Google Cloud 設定')); };
+    window.__gmapsReady = res;
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(cfg.gkey)}&callback=__gmapsReady&loading=async&libraries=geocoding&language=zh-TW&region=TW`;
+    s.async = true; s.onerror = () => { gmapsP = null; rej(new Error('Google 地圖載入失敗，請確認網路')); };
+    document.head.append(s);
+  }));
+}
+async function googleMapView(placed, folder) {
+  const box = $('#map');
+  try { await loadGoogleMaps(); } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const map = new google.maps.Map(box, { center: { lat: 23.7, lng: 121 }, zoom: 7, mapTypeControl: false, streetViewControl: false, fullscreenControl: false });
+  const info = new google.maps.InfoWindow(), bounds = new google.maps.LatLngBounds();
+  let n = 0;
+  placed.filter(i => !folder || i.folderId === folder).forEach(i => {
+    const pos = { lat: i.place.lat, lng: i.place.lng };
+    const m = new google.maps.Marker({ position: pos, map, title: i.place.name || i.title });
+    m.addListener('click', () => {
+      info.setContent(`<div style="max-width:220px"><b>${esc(i.place.name || i.title)}</b><br>${esc(i.place.address)}<br><span style="color:#666">${esc(i.summary)}</span>
+        <div style="margin-top:6px"><a href="#/item/${i.id}">詳情</a>　<a href="${gmapsUrl(i.place)}" target="_blank" rel="noopener">在 Google 地圖開啟 ↗</a></div></div>`);
+      info.open(map, m);
+    });
+    bounds.extend(pos); n++;
+  });
+  if (n) { map.fitBounds(bounds, 60); if (n === 1) google.maps.event.addListenerOnce(map, 'idle', () => map.setZoom(15)); }
 }
 let leafletP;
 function loadLeaflet() {
@@ -136,8 +243,15 @@ async function mapPage(v) {
     ${usable.map(f => `<button data-f="${f.id}" class="${mapFolder === f.id ? 'on' : ''}">${esc(f.name)}</button>`).join('')}</div>
   <div id="map"></div>
   ${placed.length ? '' : '<div class="empty">還沒有有座標的地點。<br>到收藏的詳情頁，按「用店名／地址查座標」。</div>'}
-  ${unplaced.length ? `<h3>尚未定位 (${unplaced.length})</h3>${unplaced.map(i => `<a class="card" href="#/item/${i.id}"><b>${esc(i.place?.name || i.title || i.url)}</b><div class="sub">${esc(i.place?.address || '點進去補上地址並查座標')}</div></a>`).join('')}` : ''}`;
+  ${unplaced.length ? `<h3>尚未定位 (${unplaced.length})</h3><button id="autogeo" class="sec" style="width:100%;margin-bottom:8px">自動查座標（約 ${Math.ceil(unplaced.length * 1.2)} 秒）</button><div class="sub" id="geomsg"></div>${unplaced.map(i => `<a class="card" href="#/item/${i.id}"><b>${esc(i.place?.name || i.title || i.url)}</b><div class="sub">${esc(i.place?.address || '點進去補上地址並查座標')}</div></a>`).join('')}` : ''}`;
   v.querySelectorAll('.chips button').forEach(b => b.onclick = () => { mapFolder = b.dataset.f; mapPage(v); });
+  const ag = $('#autogeo');
+  if (ag) ag.onclick = async () => {
+    ag.disabled = true;
+    const ok = await batchGeocode(unplaced, (n, t) => { $('#geomsg').textContent = `查詢中 ${n} / ${t}…（請不要離開此頁）`; });
+    toast(`查到 ${ok} 筆，其餘請進詳情頁補地址`, 4000); mapPage(v);
+  };
+  if (cfg.gkey) return googleMapView(placed, mapFolder);
   try { await loadLeaflet(); } catch (e) { $('#map').innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   const map = L.map('map', { zoomControl: true }).setView([23.7, 121], 7);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
@@ -425,14 +539,19 @@ async function settings(v) {
   v.innerHTML = `<div class="card"><b>OpenAI API key</b><div class="sub">只存在這支手機的瀏覽器，不會上傳到其他地方。</div>
   <label>API key</label><input id="key" type="password" autocomplete="off" placeholder="sk-…" value="${esc(cfg.key)}">
   <label>模型</label><input id="model" value="${esc(cfg.model)}">
+  <label>Google Maps 金鑰（選填，填了地圖與查座標都改用 Google）</label><input id="gkey" type="password" autocomplete="off" value="${esc(cfg.gkey)}">
   <div class="row"><button id="ss" disabled>儲存</button></div></div>
+  <div class="card"><b>匯入 Google 地圖已儲存地點</b><div class="sub">選 Google Takeout 匯出的 .csv 或 .json（可一次選多個）。每個檔案會變成一個收藏夾，重複的連結會略過。</div>
+  <div class="row"><button id="gimp" class="sec">選擇檔案匯入</button></div>
+  <input id="gfile" type="file" accept=".csv,.json,application/json,text/csv" multiple hidden><div class="sub" id="gmsg" style="margin-top:8px"></div></div>
   <div class="card"><b>備份</b><div class="row"><button id="exp" class="sec">匯出 JSON</button><button id="imp" class="sec">匯入 JSON</button></div>
   <input id="file" type="file" accept="application/json,.json" hidden></div>`;
-  const dirty = () => $('#key').value.trim() !== cfg.key || ($('#model').value.trim() || 'gpt-4o-mini') !== cfg.model;
+  const dirty = () => $('#key').value.trim() !== cfg.key || $('#gkey').value.trim() !== cfg.gkey || ($('#model').value.trim() || 'gpt-4o-mini') !== cfg.model;
   const refresh = () => { $('#ss').disabled = !dirty(); };
-  $('#key').oninput = $('#model').oninput = refresh;
+  $('#key').oninput = $('#model').oninput = $('#gkey').oninput = refresh;
   $('#ss').onclick = () => {
     localStorage.setItem('apiKey', $('#key').value.trim());
+    localStorage.setItem('gmapsKey', $('#gkey').value.trim());
     localStorage.setItem('model', $('#model').value.trim() || 'gpt-4o-mini');
     $('#model').value = cfg.model; refresh(); toast('已儲存');
   };
@@ -441,6 +560,15 @@ async function settings(v) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     a.download = `收藏備份-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+  };
+  $('#gimp').onclick = () => $('#gfile').click();
+  $('#gfile').onchange = async e => {
+    const msg = $('#gmsg');
+    try {
+      const r = await importGoogleFiles([...e.target.files]);
+      msg.textContent = `匯入 ${r.added} 筆，略過重複 ${r.skipped} 筆，其中 ${r.nopos} 筆還沒有座標。到「地圖」頁按「自動查座標」補上。`;
+    } catch (err) { msg.textContent = '匯入失敗：' + err.message; }
+    e.target.value = '';
   };
   $('#imp').onclick = () => $('#file').click();
   $('#file').onchange = async e => {
