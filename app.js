@@ -106,6 +106,7 @@ async function route() {
 }
 
 /* ---------- 首頁 ---------- */
+let shared = null;
 let filter = { q: '', type: '' };
 async function home(v) {
   $('#title').textContent = '收藏整理';
@@ -133,7 +134,8 @@ async function home(v) {
 /* ---------- 新增 ---------- */
 async function add(v) {
   $('#title').textContent = '新增收藏';
-  const p = new URLSearchParams(location.search);
+  const p = shared || new URLSearchParams();
+  shared = null;
   const sharedText = [p.get('title'), p.get('text')].filter(Boolean).join('\n');
   const sharedUrl = p.get('url') || firstUrl(sharedText);
   v.innerHTML = `<label>連結</label><input id="url" type="url" placeholder="https://…" value="${esc(sharedUrl)}">
@@ -175,7 +177,7 @@ async function add(v) {
     if (!it.title) toast('AI 沒有產生標題，請自己填寫標題再儲存', 5000);
     formView($('#out'), it, folders, true, hit ? '' : aiFolder);
   };
-  if (sharedUrl || sharedText) { history.replaceState(null, '', location.pathname + '#/add'); if (cfg.key) $('#go').click(); }
+  if ((sharedUrl || sharedText) && cfg.key) $('#go').click();
 }
 
 /* ---------- 表單（新增確認 / 編輯共用）---------- */
@@ -322,7 +324,11 @@ async function settings(v) {
 openDB().then(() => {
   addEventListener('hashchange', route);
   // 分享進來：?url=…&text=… 直接去新增頁
-  if (location.search && /[?&](url|text|title)=/.test(location.search)) location.hash = '#/add';
+  // 分享進來：先記下參數、清掉網址上的參數，只渲染一次新增頁
+  if (/[?&](url|text|title)=/.test(location.search)) {
+    shared = new URLSearchParams(location.search);
+    history.replaceState(null, '', location.pathname + '#/add');
+  }
   route();
 });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
