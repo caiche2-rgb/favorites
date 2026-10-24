@@ -145,7 +145,7 @@ async function add(v) {
   $('#go').onclick = async () => {
     const url = $('#url').value.trim(), text = $('#txt').value.trim();
     if (!url && !text) return toast('請輸入連結或文字');
-    if (/instagram\.com|tiktok\.com|threads\.net|facebook\.com|fb\.watch/i.test(url) && text.length < 10)
+    if (/instagram\.com|tiktok\.com|threads\.(net|com)|facebook\.com|fb\.watch|x\.com|twitter\.com/i.test(url) && text.length < 10)
       return toast('IG／TikTok 這類連結讀不到內容，請先把貼文文字貼到下面的欄位，再按分析', 6000);
     const it = blankItem(url, text);
     const btn = $('#go'); btn.disabled = true; btn.textContent = '分析中…';
@@ -172,6 +172,7 @@ async function add(v) {
     const hit = folders.find(f => f.name === aiFolder);
     if (hit) it.folderId = hit.id;
     btn.disabled = false; btn.textContent = '分析並分類';
+    if (!it.title) toast('AI 沒有產生標題，請自己填寫標題再儲存', 5000);
     formView($('#out'), it, folders, true, hit ? '' : aiFolder);
   };
   if (sharedUrl || sharedText) { history.replaceState(null, '', location.pathname + '#/add'); if (cfg.key) $('#go').click(); }
